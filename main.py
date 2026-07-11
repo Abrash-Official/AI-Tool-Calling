@@ -22,6 +22,16 @@ app = FastAPI(title="Free AI Tool-Calling Agent")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # ==========================================
+# Health Check Endpoint for Render
+# ==========================================
+@app.get("/")
+@app.get("/healthz")
+def health_check():
+    """Render will ping this endpoint to check if the deployment was successful."""
+    return {"status": "Agent is live and running!"}
+
+
+# ==========================================
 # 2. Live Notion Tool Execution
 # ==========================================
 def execute_create_task(task_name: str, due_date: str, priority: str, description: str, assignee: str) -> dict:
