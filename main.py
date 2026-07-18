@@ -103,6 +103,7 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
     if not api_key:
         return {"error": "Todoist API Key is missing in .env"}
 
+    # The correct endpoint for the REST API
     url = "https://api.todoist.com/rest/v2/tasks"
     
     headers = {
@@ -110,23 +111,34 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
         "Content-Type": "application/json"
     }
 
+    # Ensure payload is clean and priority is an integer
     payload = {
         "content": task_name,
         "description": description,
-        "priority": priority # 4 is highest priority, 1 is normal
+        "priority": int(priority)
     }
     
     if due_string:
         payload["due_string"] = due_string
 
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        # Added timeout to prevent hanging, and ensure json is passed correctly
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
-        return {"status": "Successfully added to Todoist!", "url": response.json().get("url")}
+        
+        # Todoist returns a lot of data, we just want to confirm success
+        task_data = response.json()
+        return {
+            "status": "Successfully added to Todoist!", 
+            "task_id": task_data.get("id"),
+            "url": task_data.get("url")
+        }
     except requests.exceptions.RequestException as e:
-        logger.error(f"Todoist API Error: {response.text}")
-        return {"error": "Failed to create task in Todoist", "details": str(e)}
-
+        logger.error(f"Todoist API Error: {response.text if 'response' in locals() else str(e)}")
+        return {
+            "error": "Failed to create task in Todoist", 
+            "details": response.text if 'response' in locals() else str(e)
+        }
 
 # Placeholder functions for your other tools
 def execute_calculator(expression: str) -> float:
