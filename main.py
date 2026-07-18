@@ -34,7 +34,7 @@ def health_check():
 # ==========================================
 # 2. Live Notion Tool Execution
 # ==========================================
-def execute_create_task(task_name: str, due_date: str, priority: str, description: str, assignee: str) -> dict:
+def execute_create_notion_task(task_name: str, due_date: str, priority: str, description: str, assignee: str) -> dict:
     """Sends a formatted HTTP POST request to the Notion API to create a row in the Tasks Tracker."""
     
     notion_api_key = os.getenv("NOTION_API_KEY")
@@ -93,6 +93,39 @@ def execute_create_task(task_name: str, due_date: str, priority: str, descriptio
             "details": notion_error or str(e),
             "hint": "Share your Notion database with the 'Ai Tool Calling' integration and verify NOTION_DB_ID in .env.",
         }
+
+# ==========================================
+# 3. Live Todoist Tool Execution
+# ==========================================
+def execute_create_todoist_task(task_name: str, priority: int = 1, description: str = "", due_string: str = "") -> dict:
+    """Creates a task in the user's Todoist Inbox."""
+    api_key = os.getenv("TODOIST_API_KEY")
+    if not api_key:
+        return {"error": "Todoist API Key is missing in .env"}
+
+    url = "https://api.todoist.com/rest/v2/tasks"
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "content": task_name,
+        "description": description,
+        "priority": priority # 4 is highest priority, 1 is normal
+    }
+    
+    if due_string:
+        payload["due_string"] = due_string
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        return {"status": "Successfully added to Todoist!", "url": response.json().get("url")}
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Todoist API Error: {response.text}")
+        return {"error": "Failed to create task in Todoist", "details": str(e)}
 
 
 # Placeholder functions for your other tools
@@ -197,14 +230,14 @@ def execute_email_draft(recipient: str, subject: str, body: str) -> dict:
 
 
 # ==========================================
-# 3. Updated Groq Tool Schemas
+# 4. Updated Groq Tool Schemas
 # ==========================================
 groq_tools = [
     {
         "type": "function",
         "function": {
-            "name": "create_task",
-            "description": "Creates an assignment in the Notion Tasks Tracker database.",
+            "name": "create_notion_task",
+            "description": "Creates a team/collaborative assignment in the Notion Tasks Tracker database. Use this if the user mentions 'notion' or implies a shared/team task.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -215,6 +248,23 @@ groq_tools = [
                     "assignee": {"type": "string", "description": "The name of the person responsible for the task."}
                 },
                 "required": ["task_name", "due_date", "priority", "description", "assignee"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_todoist_task",
+            "description": "Creates a personal task in Todoist. Use this if the user mentions 'todoist', 'personal', 'solo', or 'individual' task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_name": {"type": "string", "description": "A short title for the task."},
+                    "priority": {"type": "integer", "enum": [1, 2, 3, 4], "description": "Priority level: 4 (Highest/Red), 3 (High/Orange), 2 (Medium/Blue), 1 (Normal/Grey)."},
+                    "description": {"type": "string", "description": "Detailed notes or breakdown of the task."},
+                    "due_string": {"type": "string", "description": "Natural language due date, e.g. 'tomorrow at 5pm' or 'next monday'."}
+                },
+                "required": ["task_name"],
             },
         },
     },
@@ -240,7 +290,7 @@ class UserRequest(BaseModel):
     text: str
 
 # ==========================================
-# 4. Core Endpoint Route
+# 5. Core Endpoint Route
 # ==========================================
 @app.post("/api/agent")
 async def run_agent(request: UserRequest):
@@ -248,7 +298,15 @@ async def run_agent(request: UserRequest):
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a precise routing agent. Use create_task for Notion task/todo requests (always format dates as YYYY-MM-DD). Use email_draft when the user wants to write, compose, or draft an email (draft only, do not mention sending). Always use a full email address for the recipient."},
+                {
+                    "role": "system", 
+                    "content": (
+                        "You are a precise routing agent. "
+                        "If the user asks to add a task and mentions 'personal', 'solo', 'individual', or 'Todoist', ALWAYS use the create_todoist_task tool. "
+                        "If the user asks to add a task and explicitly mentions 'Notion' or it sounds like a team project, use the create_notion_task tool. "
+                        "Use email_draft when the user wants to draft an email. Always use a full email address for the recipient."
+                    )
+                },
                 {"role": "user", "content": request.text}
             ],
             tools=groq_tools,
@@ -258,7 +316,7 @@ async def run_agent(request: UserRequest):
         message = response.choices[0].message
         tool_calls = message.tool_calls
         
-        output = {"tools_used": [], "task_result": None, "email_result": None}
+        output = {"tools_used": [], "task_result": None, "todoist_result": None, "email_result": None}
         
         if not tool_calls:
             return {"status": "No tools required", "response": message.content}
@@ -268,19 +326,26 @@ async def run_agent(request: UserRequest):
             args = json.loads(tool_call.function.arguments)
             output["tools_used"].append(func_name)
             
-            if func_name == "create_task":
-                output["task_result"] = execute_create_task(
-                    task_name=args["task_name"],
-                    due_date=args["due_date"],
-                    priority=args["priority"],
-                    description=args["description"],
-                    assignee=args["assignee"]
+            if func_name == "create_notion_task":
+                output["task_result"] = execute_create_notion_task(
+                    task_name=args.get("task_name", "Untitled Task"),
+                    due_date=args.get("due_date", ""),
+                    priority=args.get("priority", "Medium"),
+                    description=args.get("description", ""),
+                    assignee=args.get("assignee", "Unassigned")
+                )
+            elif func_name == "create_todoist_task":
+                output["todoist_result"] = execute_create_todoist_task(
+                    task_name=args.get("task_name", "Untitled Task"),
+                    priority=args.get("priority", 1),
+                    description=args.get("description", ""),
+                    due_string=args.get("due_string", "")
                 )
             elif func_name == "email_draft":
                 output["email_result"] = execute_email_draft(
-                    recipient=args["recipient"],
-                    subject=args["subject"],
-                    body=args["body"],
+                    recipient=args.get("recipient", ""),
+                    subject=args.get("subject", ""),
+                    body=args.get("body", ""),
                 )
 
         return output
