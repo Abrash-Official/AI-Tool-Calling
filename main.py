@@ -103,8 +103,8 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
     if not api_key:
         return {"error": "Todoist API Key is missing in .env"}
 
-    # The correct endpoint for the REST API
-    url = "https://api.todoist.com/rest/v2/tasks"
+    # Updated to the new API v1 endpoint!
+    url = "https://api.todoist.com/api/v1/tasks"
     
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -122,11 +122,9 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
         payload["due_string"] = due_string
 
     try:
-        # Added timeout to prevent hanging, and ensure json is passed correctly
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         
-        # Todoist returns a lot of data, we just want to confirm success
         task_data = response.json()
         return {
             "status": "Successfully added to Todoist!", 
