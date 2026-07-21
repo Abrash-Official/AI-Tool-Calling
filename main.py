@@ -103,7 +103,6 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
     if not api_key:
         return {"error": "Todoist API Key is missing in .env"}
 
-    # Updated to the new API v1 endpoint!
     url = "https://api.todoist.com/api/v1/tasks"
     
     headers = {
@@ -111,11 +110,29 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
         "Content-Type": "application/json"
     }
 
-    # Ensure payload is clean and priority is an integer
+    # FIX: Safely handle the priority in case the AI passes a text string like "High" instead of an int
+    safe_priority = 1
+    try:
+        if isinstance(priority, str) and not priority.isdigit():
+            p_lower = priority.lower()
+            if "highest" in p_lower or "4" in p_lower:
+                safe_priority = 4
+            elif "high" in p_lower or "3" in p_lower:
+                safe_priority = 3
+            elif "medium" in p_lower or "2" in p_lower:
+                safe_priority = 2
+            else:
+                safe_priority = 1 # Default Normal
+        else:
+            safe_priority = int(priority)
+    except (ValueError, TypeError):
+        safe_priority = 1 # Fallback to normal priority if conversion fails entirely
+
+    # Ensure payload is clean and priority is safely an integer
     payload = {
         "content": task_name,
         "description": description,
-        "priority": int(priority)
+        "priority": safe_priority
     }
     
     if due_string:
@@ -247,7 +264,8 @@ groq_tools = [
         "type": "function",
         "function": {
             "name": "create_notion_task",
-            "description": "Creates a team/collaborative assignment in the Notion Tasks Tracker database. Use this if the user mentions 'notion' or implies a shared/team task.",
+            # FIX: Heavily updated description to ensure it's NOT the default
+            "description": "Creates a collaborative assignment in the Notion Tasks database. ONLY use this tool if the user EXPLICITLY types the word 'Notion'. Do NOT use this as the default task tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -265,7 +283,8 @@ groq_tools = [
         "type": "function",
         "function": {
             "name": "create_todoist_task",
-            "description": "Creates a personal task in Todoist. Use this if the user mentions 'todoist', 'personal', 'solo', or 'individual' task.",
+            # FIX: Heavily updated description to make this the absolute default task tool
+            "description": "Creates a task in Todoist. This is the DEFAULT tool for adding, creating, or making any tasks. Use this for ALL task requests unless the user explicitly mentions the word 'Notion'.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -310,11 +329,12 @@ async def run_agent(request: UserRequest):
             messages=[
                 {
                     "role": "system", 
+                    # FIX: Updated system prompt to strictly enforce Todoist as default
                     "content": (
                         "You are a precise routing agent. "
-                        "If the user asks to add a task and mentions 'personal', 'solo', 'individual', or 'Todoist', ALWAYS use the create_todoist_task tool. "
-                        "If the user asks to add a task and explicitly mentions 'Notion' or it sounds like a team project, use the create_notion_task tool. "
-                        "Use email_draft when the user wants to draft an email. Always use a full email address for the recipient."
+                        "By default, if the user asks to add a task, ALWAYS use the `create_todoist_task` tool. "
+                        "ONLY use the `create_notion_task` tool if the user EXPLICITLY types the word 'Notion' in their request. "
+                        "Use `email_draft` when the user wants to draft an email. Always use a full email address for the recipient."
                     )
                 },
                 {"role": "user", "content": request.text}
