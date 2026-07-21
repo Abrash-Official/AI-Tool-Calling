@@ -5,6 +5,8 @@ import smtplib
 import imaplib
 import time
 import requests
+import traceback
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from fastapi import FastAPI, HTTPException
@@ -94,6 +96,7 @@ def execute_create_notion_task(task_name: str, due_date: str, priority: str, des
             "hint": "Share your Notion database with the 'Ai Tool Calling' integration and verify NOTION_DB_ID in .env.",
         }
 
+
 # ==========================================
 # 3. Live Todoist Tool Execution
 # ==========================================
@@ -110,7 +113,7 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
         "Content-Type": "application/json"
     }
 
-    # FIX: Safely handle the priority in case the AI passes a text string like "High" instead of an int
+    # Safely handle the priority in case the AI passes a text string like "High" instead of an int
     safe_priority = 1
     try:
         if isinstance(priority, str) and not priority.isdigit():
@@ -154,6 +157,7 @@ def execute_create_todoist_task(task_name: str, priority: int = 1, description: 
             "error": "Failed to create task in Todoist", 
             "details": response.text if 'response' in locals() else str(e)
         }
+
 
 # Placeholder functions for your other tools
 def execute_calculator(expression: str) -> float:
@@ -264,13 +268,12 @@ groq_tools = [
         "type": "function",
         "function": {
             "name": "create_notion_task",
-            # FIX: Heavily updated description to ensure it's NOT the default
-            "description": "Creates a collaborative assignment in the Notion Tasks database. ONLY use this tool if the user EXPLICITLY types the word 'Notion'. Do NOT use this as the default task tool.",
+            "description": "Creates a collaborative assignment in the Notion Tasks database. ONLY use this tool if the user explicitly asks to add the task TO Notion. If the user explicitly asks NOT to put it in Notion, do not use this tool.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_name": {"type": "string", "description": "A short title for the task."},
-                    "due_date": {"type": "string", "description": "The deadline, strictly formatted as YYYY-MM-DD."},
+                    "due_date": {"type": "string", "description": "The deadline, strictly formatted as YYYY-MM-DD. Calculate this based on the current date context provided."},
                     "priority": {"type": "string", "enum": ["High", "Medium", "Low"], "description": "Task priority level."},
                     "description": {"type": "string", "description": "Detailed breakdown of the task requirements."},
                     "assignee": {"type": "string", "description": "The name of the person responsible for the task."}
@@ -283,15 +286,14 @@ groq_tools = [
         "type": "function",
         "function": {
             "name": "create_todoist_task",
-            # FIX: Heavily updated description to make this the absolute default task tool
-            "description": "Creates a task in Todoist. This is the DEFAULT tool for adding, creating, or making any tasks. Use this for ALL task requests unless the user explicitly mentions the word 'Notion'.",
+            "description": "Creates a task in Todoist. This is the DEFAULT tool for adding, creating, or making any tasks. Use this for ALL task requests unless the user explicitly asks to put it in Notion.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "task_name": {"type": "string", "description": "A short title for the task."},
-                    "priority": {"type": "integer", "enum": [1, 2, 3, 4], "description": "Priority level: 4 (Highest/Red), 3 (High/Orange), 2 (Medium/Blue), 1 (Normal/Grey)."},
+                    "priority": {"type": "integer", "enum": [1, 2, 3, 4], "description": "Strictly an integer priority level: 4 (Highest/Red), 3 (High/Orange), 2 (Medium/Blue), 1 (Normal/Grey). NEVER supply a string."},
                     "description": {"type": "string", "description": "Detailed notes or breakdown of the task."},
-                    "due_string": {"type": "string", "description": "Natural language due date, e.g. 'tomorrow at 5pm' or 'next monday'."}
+                    "due_string": {"type": "string", "description": "Natural language due date, e.g. 'tomorrow at 5pm' or 'next monday' or 'morning'."}
                 },
                 "required": ["task_name"],
             },
@@ -324,17 +326,27 @@ class UserRequest(BaseModel):
 @app.post("/api/agent")
 async def run_agent(request: UserRequest):
     try:
+        # Dynamically calculate current date and time for the AI's context
+        current_datetime = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
+        
         response = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
                 {
                     "role": "system", 
-                    # FIX: Updated system prompt to strictly enforce Todoist as default
                     "content": (
-                        "You are a precise routing agent. "
-                        "By default, if the user asks to add a task, ALWAYS use the `create_todoist_task` tool. "
-                        "ONLY use the `create_notion_task` tool if the user EXPLICITLY types the word 'Notion' in their request. "
-                        "Use `email_draft` when the user wants to draft an email. Always use a full email address for the recipient."
+                        "You are a precise routing and data formatting agent.\n"
+                        f"CURRENT DATE AND TIME: {current_datetime}\n\n"
+                        "ROUTING RULES:\n"
+                        "- By default, if the user asks to add a task, ALWAYS use the `create_todoist_task` tool.\n"
+                        "- ONLY use the `create_notion_task` tool if the user explicitly requests the task be added TO Notion.\n"
+                        "- If the user says something like 'don't add to Notion' or 'not Notion', you MUST respect that negative constraint and default back to `create_todoist_task`.\n"
+                        "- Use `email_draft` when the user wants to draft an email. Always use a full email address for the recipient.\n\n"
+                        "DATA TYPE RULES:\n"
+                        "- BEFORE calling a tool, analyze the required data types for its parameters.\n"
+                        "- If a parameter requires an integer (like Todoist priority), output ONLY a pure integer (e.g., 3), NEVER a string (e.g., '3' or 'High').\n"
+                        "- If a parameter requires a specific date format (e.g., YYYY-MM-DD for Notion), calculate it accurately based on the CURRENT DATE AND TIME provided above (e.g., if user says 'tomorrow morning', convert it to the correct YYYY-MM-DD).\n"
+                        "- For Todoist, you can safely pass natural language times like 'tomorrow morning' directly to the due_string parameter."
                     )
                 },
                 {"role": "user", "content": request.text}
@@ -353,7 +365,13 @@ async def run_agent(request: UserRequest):
             
         for tool_call in tool_calls:
             func_name = tool_call.function.name
-            args = json.loads(tool_call.function.arguments)
+            
+            # Catch parsing errors specifically if the AI outputs badly formatted JSON
+            try:
+                args = json.loads(tool_call.function.arguments)
+            except json.JSONDecodeError as decode_error:
+                raise ValueError(f"AI produced invalid arguments format: {decode_error}")
+                
             output["tools_used"].append(func_name)
             
             if func_name == "create_notion_task":
@@ -381,5 +399,18 @@ async def run_agent(request: UserRequest):
         return output
 
     except Exception as e:
-        logger.error(f"Execution error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Agent failure.")
+        # Instead of hiding the error, capture the full traceback for debugging!
+        error_details = str(e)
+        full_traceback = traceback.format_exc()
+        
+        logger.error(f"Agent crashed! Error: {error_details}\nTraceback:\n{full_traceback}")
+        
+        # Return a 500 error but with the EXACT reason why it failed to the user
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "message": "Agent execution failed due to an internal error.",
+                "error": error_details,
+                "traceback": full_traceback.split("\n") # Splits into list for readable JSON format
+            }
+        )
