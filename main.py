@@ -330,7 +330,7 @@ async def run_agent(request: UserRequest):
         current_datetime = datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
         
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="qwen/qwen3.6-27b",
             messages=[
                 {
                     "role": "system", 
