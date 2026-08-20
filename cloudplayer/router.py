@@ -24,7 +24,9 @@ def sanitize_filename(name: str) -> str:
 def get_or_create_folder(folder_name: str, access_token: str) -> str:
     headers = {"Authorization": f"Bearer {access_token}"}
     query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    search_url = f"https://www.googleapis.com/drive/v3/files?q={urllib.parse.quote(query)}"
+    
+    # FIXED: using urlparse instead of urllib.parse
+    search_url = f"https://www.googleapis.com/drive/v3/files?q={urlparse.quote(query)}"
     
     res = requests.get(search_url, headers=headers)
     if res.status_code != 200:
