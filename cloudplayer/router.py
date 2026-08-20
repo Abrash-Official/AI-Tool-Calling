@@ -25,7 +25,6 @@ def get_or_create_folder(folder_name: str, access_token: str) -> str:
     headers = {"Authorization": f"Bearer {access_token}"}
     query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     
-    # FIXED: using urlparse instead of urllib.parse
     search_url = f"https://www.googleapis.com/drive/v3/files?q={urlparse.quote(query)}"
     
     res = requests.get(search_url, headers=headers)
@@ -98,8 +97,6 @@ def download_and_save(req: DownloadRequest):
                     f.write(chunk)
 
         folder_id = get_or_create_folder("MyCloudPlayer", req.access_token)
-
-        # --- UPDATED 2-STEP RAW UPLOAD LOGIC ---
         
         # 1. Upload the raw audio data directly
         upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=media"
@@ -118,15 +115,14 @@ def download_and_save(req: DownloadRequest):
             
         file_id = upload_res.json().get("id")
 
-        # 2. Update the file name and move it into the MyCloudPlayer folder
-        metadata_url = f"https://www.googleapis.com/drive/v3/files/{file_id}"
+        # 2. Update the file name and move it via URL parameters instead of JSON body
+        metadata_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?addParents={folder_id}"
         metadata_headers = {
             "Authorization": f"Bearer {req.access_token}",
             "Content-Type": "application/json"
         }
         metadata = {
-            'name': f"{video_title}.mp3",
-            'parents': [folder_id]
+            'name': f"{video_title}.mp3"
         }
         
         patch_res = requests.patch(metadata_url, headers=metadata_headers, json=metadata)
