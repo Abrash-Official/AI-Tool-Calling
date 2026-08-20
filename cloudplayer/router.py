@@ -3,6 +3,7 @@ import re
 import json
 import time
 import requests
+import hashlib
 import urllib.parse as urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -86,39 +87,34 @@ def download_and_save(req: DownloadRequest):
         if not download_link:
             raise HTTPException(status_code=400, detail="No download link received from API.")
 
-        # 1. Download directly into memory (RAM) with aggressive spoofing and retries
-                mp3_response = None
-                download_headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer": "https://www.youtube.com/",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9"
-                }
-                
-                for attempt in range(3):
-                    mp3_response = requests.get(download_link, headers=download_headers)
-                    if mp3_response.status_code == 200:
-                        break
-                    # If we get a 404, wait 3 seconds and try again
-                    time.sleep(3) 
-                    
-                # If it still fails after 3 tries, this will throw the error
-                mp3_response.raise_for_status()
+        # --- THE FIX FOR RAPIDAPI 404 NOT FOUND ---
+        rapidapi_username = os.getenv("RAPIDAPI_USERNAME", "")
+        if not rapidapi_username:
+            raise HTTPException(status_code=400, detail="RAPIDAPI_USERNAME environment variable is missing on Render.")
+            
+        md5_hash = hashlib.md5(rapidapi_username.encode('utf-8')).hexdigest()
+        
+        download_headers = {
+            "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) {rapidapi_username}",
+            "x-run": md5_hash
+        }
 
-        # 2. Strict Validation: Check if the API blocked Render and returned an HTML page instead of an MP3
+        # 1. Download directly into memory (RAM) with the whitelist headers
+        mp3_response = requests.get(download_link, headers=download_headers)
+        mp3_response.raise_for_status()
+
         content_type = mp3_response.headers.get('Content-Type', '').lower()
         if 'text' in content_type or 'html' in content_type:
-            raise HTTPException(status_code=403, detail="Download blocked. The provider returned a text/HTML error page instead of an audio file. Render's IP might be blocked.")
+            raise HTTPException(status_code=403, detail="Download blocked. The provider returned an HTML page instead of an audio file.")
         
         audio_data = mp3_response.content
         
-        # 3. Size Validation: If it's less than 100KB, it's definitely not a full song
         if len(audio_data) < 100000:
-            raise HTTPException(status_code=400, detail="The downloaded file is way too small to be a song. The API likely returned a silent error.")
+            raise HTTPException(status_code=400, detail="The downloaded file is way too small to be a song.")
 
         folder_id = get_or_create_folder("MyCloudPlayer", req.access_token)
         
-        # 4. Construct the multipart payload entirely in memory
+        # 2. Construct the multipart payload entirely in memory
         metadata = {
             'name': f"{video_title}.mp3",
             'parents': [folder_id],
@@ -134,7 +130,7 @@ def download_and_save(req: DownloadRequest):
         body.extend(b"\r\n")
         body.extend(f"--{boundary}\r\n".encode('utf-8'))
         body.extend(b"Content-Type: audio/mpeg\r\n\r\n")
-        body.extend(audio_data)  # Append the raw audio from RAM
+        body.extend(audio_data)
         body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
         
         upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
@@ -144,7 +140,7 @@ def download_and_save(req: DownloadRequest):
             "Content-Length": str(len(body))
         }
         
-        # 5. Push the memory buffer directly to Drive
+        # 3. Push the memory buffer directly to Drive
         upload_res = requests.post(upload_url, headers=upload_headers, data=body)
 
         if upload_res.status_code in (200, 201):
