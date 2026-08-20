@@ -48,9 +48,6 @@ def get_or_create_folder(folder_name: str, access_token: str) -> str:
 
 @router.post("/api/download-and-save")
 def download_and_save(req: DownloadRequest):
-    output_dir = "temp_audio"
-    os.makedirs(output_dir, exist_ok=True)
-
     parsed = urlparse.urlparse(req.video_url)
     video_id = urlparse.parse_qs(parsed.query).get('v')
     if not video_id:
@@ -84,23 +81,29 @@ def download_and_save(req: DownloadRequest):
                     video_title = sanitize_filename(raw_title)
                 break 
             else:
-                raise HTTPException(status_code=400, detail=f"API Error: {data.get('msg', 'Unknown error')}")
+                raise HTTPException(status_code=400, detail=f"RapidAPI Error: {data.get('msg', 'Unknown error')}")
 
         if not download_link:
-            raise HTTPException(status_code=400, detail="No download link received.")
+            raise HTTPException(status_code=400, detail="No download link received from API.")
 
-        file_path = os.path.join(output_dir, f"{video_title}.mp3")
-        mp3_res = requests.get(download_link, stream=True, headers={"User-Agent": "Mozilla/5.0"})
-        with open(file_path, "wb") as f:
-            for chunk in mp3_res.iter_content(chunk_size=1024):
-                if chunk:
-                    f.write(chunk)
+        # 1. Download directly into memory (RAM)
+        mp3_response = requests.get(download_link, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        mp3_response.raise_for_status()
+
+        # 2. Strict Validation: Check if the API blocked Render and returned an HTML page instead of an MP3
+        content_type = mp3_response.headers.get('Content-Type', '').lower()
+        if 'text' in content_type or 'html' in content_type:
+            raise HTTPException(status_code=403, detail="Download blocked. The provider returned a text/HTML error page instead of an audio file. Render's IP might be blocked.")
+        
+        audio_data = mp3_response.content
+        
+        # 3. Size Validation: If it's less than 100KB, it's definitely not a full song
+        if len(audio_data) < 100000:
+            raise HTTPException(status_code=400, detail="The downloaded file is way too small to be a song. The API likely returned a silent error.")
 
         folder_id = get_or_create_folder("MyCloudPlayer", req.access_token)
         
-        # --- BULLETPROOF MULTIPART UPLOAD ---
-        # We manually construct the exact byte payload Google Drive expects
-        
+        # 4. Construct the multipart payload entirely in memory
         metadata = {
             'name': f"{video_title}.mp3",
             'parents': [folder_id],
@@ -109,7 +112,6 @@ def download_and_save(req: DownloadRequest):
         
         boundary = "-------314159265358979323846"
         
-        # Build the byte array
         body = bytearray()
         body.extend(f"--{boundary}\r\n".encode('utf-8'))
         body.extend(b"Content-Type: application/json; charset=UTF-8\r\n\r\n")
@@ -117,11 +119,7 @@ def download_and_save(req: DownloadRequest):
         body.extend(b"\r\n")
         body.extend(f"--{boundary}\r\n".encode('utf-8'))
         body.extend(b"Content-Type: audio/mpeg\r\n\r\n")
-        
-        # Read the perfect local MP3 into RAM and attach it
-        with open(file_path, "rb") as f:
-            body.extend(f.read())
-            
+        body.extend(audio_data)  # Append the raw audio from RAM
         body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
         
         upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
@@ -131,19 +129,13 @@ def download_and_save(req: DownloadRequest):
             "Content-Length": str(len(body))
         }
         
-        # Send the exact byte array
+        # 5. Push the memory buffer directly to Drive
         upload_res = requests.post(upload_url, headers=upload_headers, data=body)
-
-        # Cleanup local file
-        if os.path.exists(file_path):
-            os.remove(file_path)
 
         if upload_res.status_code in (200, 201):
             return {"status": "success", "file": upload_res.json()}
         else:
-            raise HTTPException(status_code=upload_res.status_code, detail=upload_res.text)
+            raise HTTPException(status_code=upload_res.status_code, detail=f"Drive Upload Error: {upload_res.text}")
 
     except Exception as e:
-        if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
