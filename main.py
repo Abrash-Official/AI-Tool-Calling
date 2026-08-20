@@ -14,6 +14,9 @@ from pydantic import BaseModel
 from groq import Groq
 from dotenv import load_dotenv
 
+# --- NEW IMPORT FOR YOUR CLOUDPLAYER ENDPOINT ---
+from cloudplayer.router import router as cloudplayer_router
+
 # 1. Load environment variables securely
 load_dotenv()
 
@@ -21,6 +24,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("groq-agent")
 
 app = FastAPI(title="Free AI Tool-Calling Agent")
+
+# --- REGISTER THE NEW CLOUDPLAYER ROUTER ---
+app.include_router(cloudplayer_router)
+
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # ==========================================
