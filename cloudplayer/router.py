@@ -98,42 +98,45 @@ def download_and_save(req: DownloadRequest):
 
         folder_id = get_or_create_folder("MyCloudPlayer", req.access_token)
         
-        # 1. Upload the raw audio data directly
-        upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=media"
+        # --- THE FINAL FIX: METADATA FIRST, MEDIA SECOND ---
+        
+        # 1. Create the file metadata FIRST to force audio/mpeg MIME type
+        metadata_url = "https://www.googleapis.com/drive/v3/files"
+        metadata_headers = {
+            "Authorization": f"Bearer {req.access_token}",
+            "Content-Type": "application/json"
+        }
+        metadata = {
+            'name': f"{video_title}.mp3",
+            'parents': [folder_id],
+            'mimeType': 'audio/mpeg'
+        }
+        
+        meta_res = requests.post(metadata_url, headers=metadata_headers, json=metadata)
+        if meta_res.status_code not in (200, 201):
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(status_code=meta_res.status_code, detail=meta_res.text)
+            
+        file_id = meta_res.json().get("id")
+
+        # 2. Upload the raw audio bytes to that specific file ID using PATCH
+        upload_url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
         upload_headers = {
             "Authorization": f"Bearer {req.access_token}",
             "Content-Type": "audio/mpeg"
         }
         
         with open(file_path, "rb") as media_file:
-            upload_res = requests.post(upload_url, headers=upload_headers, data=media_file)
-            
-        if upload_res.status_code not in (200, 201):
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            raise HTTPException(status_code=upload_res.status_code, detail=upload_res.text)
-            
-        file_id = upload_res.json().get("id")
-
-        # 2. Update the file name and move it via URL parameters instead of JSON body
-        metadata_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?addParents={folder_id}"
-        metadata_headers = {
-            "Authorization": f"Bearer {req.access_token}",
-            "Content-Type": "application/json"
-        }
-        metadata = {
-            'name': f"{video_title}.mp3"
-        }
-        
-        patch_res = requests.patch(metadata_url, headers=metadata_headers, json=metadata)
+            upload_res = requests.patch(upload_url, headers=upload_headers, data=media_file)
 
         if os.path.exists(file_path):
             os.remove(file_path)
 
-        if patch_res.status_code in (200, 201):
-            return {"status": "success", "file": patch_res.json()}
+        if upload_res.status_code in (200, 201):
+            return {"status": "success", "file": upload_res.json()}
         else:
-            raise HTTPException(status_code=patch_res.status_code, detail=patch_res.text)
+            raise HTTPException(status_code=upload_res.status_code, detail=upload_res.text)
 
     except Exception as e:
         if 'file_path' in locals() and os.path.exists(file_path):
