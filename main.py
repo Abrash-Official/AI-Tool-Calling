@@ -10,6 +10,7 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from groq import Groq
 from dotenv import load_dotenv
@@ -24,6 +25,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("groq-agent")
 
 app = FastAPI(title="Free AI Tool-Calling Agent")
+
+# --- CORS MIDDLEWARE FIX ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows your Netlify app to connect
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows POST, GET, OPTIONS requests
+    allow_headers=["*"],
+)
 
 # --- REGISTER THE NEW CLOUDPLAYER ROUTER ---
 app.include_router(cloudplayer_router)
