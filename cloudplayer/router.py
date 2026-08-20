@@ -86,9 +86,24 @@ def download_and_save(req: DownloadRequest):
         if not download_link:
             raise HTTPException(status_code=400, detail="No download link received from API.")
 
-        # 1. Download directly into memory (RAM)
-        mp3_response = requests.get(download_link, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        mp3_response.raise_for_status()
+        # 1. Download directly into memory (RAM) with aggressive spoofing and retries
+                mp3_response = None
+                download_headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Referer": "https://www.youtube.com/",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9"
+                }
+                
+                for attempt in range(3):
+                    mp3_response = requests.get(download_link, headers=download_headers)
+                    if mp3_response.status_code == 200:
+                        break
+                    # If we get a 404, wait 3 seconds and try again
+                    time.sleep(3) 
+                    
+                # If it still fails after 3 tries, this will throw the error
+                mp3_response.raise_for_status()
 
         # 2. Strict Validation: Check if the API blocked Render and returned an HTML page instead of an MP3
         content_type = mp3_response.headers.get('Content-Type', '').lower()
