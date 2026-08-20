@@ -98,38 +98,43 @@ def download_and_save(req: DownloadRequest):
 
         folder_id = get_or_create_folder("MyCloudPlayer", req.access_token)
         
-        # --- THE FINAL FIX: METADATA FIRST, MEDIA SECOND ---
+        # --- BULLETPROOF MULTIPART UPLOAD ---
+        # We manually construct the exact byte payload Google Drive expects
         
-        # 1. Create the file metadata FIRST to force audio/mpeg MIME type
-        metadata_url = "https://www.googleapis.com/drive/v3/files"
-        metadata_headers = {
-            "Authorization": f"Bearer {req.access_token}",
-            "Content-Type": "application/json"
-        }
         metadata = {
             'name': f"{video_title}.mp3",
             'parents': [folder_id],
             'mimeType': 'audio/mpeg'
         }
         
-        meta_res = requests.post(metadata_url, headers=metadata_headers, json=metadata)
-        if meta_res.status_code not in (200, 201):
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            raise HTTPException(status_code=meta_res.status_code, detail=meta_res.text)
+        boundary = "-------314159265358979323846"
+        
+        # Build the byte array
+        body = bytearray()
+        body.extend(f"--{boundary}\r\n".encode('utf-8'))
+        body.extend(b"Content-Type: application/json; charset=UTF-8\r\n\r\n")
+        body.extend(json.dumps(metadata).encode('utf-8'))
+        body.extend(b"\r\n")
+        body.extend(f"--{boundary}\r\n".encode('utf-8'))
+        body.extend(b"Content-Type: audio/mpeg\r\n\r\n")
+        
+        # Read the perfect local MP3 into RAM and attach it
+        with open(file_path, "rb") as f:
+            body.extend(f.read())
             
-        file_id = meta_res.json().get("id")
-
-        # 2. Upload the raw audio bytes to that specific file ID using PATCH
-        upload_url = f"https://www.googleapis.com/upload/drive/v3/files/{file_id}?uploadType=media"
+        body.extend(f"\r\n--{boundary}--\r\n".encode('utf-8'))
+        
+        upload_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
         upload_headers = {
             "Authorization": f"Bearer {req.access_token}",
-            "Content-Type": "audio/mpeg"
+            "Content-Type": f"multipart/related; boundary={boundary}",
+            "Content-Length": str(len(body))
         }
         
-        with open(file_path, "rb") as media_file:
-            upload_res = requests.patch(upload_url, headers=upload_headers, data=media_file)
+        # Send the exact byte array
+        upload_res = requests.post(upload_url, headers=upload_headers, data=body)
 
+        # Cleanup local file
         if os.path.exists(file_path):
             os.remove(file_path)
 
